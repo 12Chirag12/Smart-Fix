@@ -1,0 +1,2 @@
+psutil>=5.9,<8
+customtkinter>=5.2,<6
