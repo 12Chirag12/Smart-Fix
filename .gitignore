@@ -49,6 +49,9 @@ install_log.txt
 node_modules/
 dist-electron/
 
+# Personal notes
+revision.txt
+
 # Windows
 Thumbs.db
 Desktop.ini
