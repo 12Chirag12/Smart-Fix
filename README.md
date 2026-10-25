@@ -1,119 +1,125 @@
-# SmartFix AI: Intelligent Windows Troubleshooting System
+# 🛡️ SmartFix AI — Autonomous Windows Error Monitor & Lab Auto-Repair
 
-SmartFix AI is a final-year B.Tech project that aims to make Windows troubleshooting easier through system-data collection, explainable rule-based analysis, AI-assisted diagnosis, and controlled repair workflows.
+> **Autonomous Windows error detection, diagnosis, and automated repair — powered by Local AI (Qwen / Llama 3) and multi-PC Lab Management.**
 
-This repository currently contains a **small, read-only demonstration prototype**. It implements only this part of the planned architecture:
+SmartFix AI runs silently in the background, monitors your Windows systems for **170+ known errors**, and offers one-click automated PowerShell repairs. For unknown application crashes, it uses a local AI model (**Qwen 3 / Llama 3 via Ollama**) to generate and execute custom PowerShell fixes — which are automatically saved into a self-learning database for future automated reuse.
 
-> System Collection → Rule-Based Diagnosis → Recommendation
+SmartFix AI is built to operate both as an **individual workstation guardian** and as a **centralized College Computer Lab Monitor (1 Admin PC + N Client PCs)** over local area networks (LAN).
 
-It does not modify Windows, run repairs, edit the registry, or execute PowerShell commands.
+---
 
-## Current prototype features
+## ✨ Features
 
-- Modern dark desktop interface built with CustomTkinter
-- CPU, RAM, and Windows-drive health cards
-- Windows version, computer name, CPU/core, memory, and disk information
-- Local network-adapter and IPv4 status
-- List of the top running processes by memory use
-- Read-only status checks for selected Windows services when available
-- Explainable rules for high CPU, high RAM, low available memory, a nearly full disk, and unavailable networking
-- Severity, possible cause, and recommended action for every detected issue
-- Temporary simulated AI explanation with no API key required
-- Error isolation so one unavailable data source does not stop the whole scan
-
-## Project files
-
-```text
-SmartFix-AI/
-├── main.py               # CustomTkinter desktop interface
-├── system_collector.py   # Read-only Windows data collection
-├── diagnosis_engine.py   # Rules and temporary AI explanations
-├── requirements.txt      # Python packages
-└── README.md              # Setup and project notes
-```
-
-## Installation
-
-Requirements:
-
-- Windows 10 or Windows 11
-- Python 3.10 or newer
-- VS Code with the Python extension (recommended)
-
-Open the project folder in VS Code. In **Terminal → New Terminal**, create and activate a virtual environment:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-Install the two dependencies:
-
-```powershell
-pip install -r requirements.txt
-```
-
-If PowerShell blocks virtual-environment activation, the prototype can still be run by selecting `.venv\Scripts\python.exe` as the VS Code Python interpreter and using the Run button.
-
-## Run the prototype
-
-From the project directory:
-
-```powershell
-python main.py
-```
-
-Then:
-
-1. Select **Scan My PC** to collect a fresh system snapshot and run the rules.
-2. Review the CPU, RAM, and disk health cards.
-3. Review detected problems, possible causes, severity, simulated AI insight, and recommended fixes.
-4. Select **View System Info** to show detailed system, network, service, and process information.
-5. Select **Diagnose Problems** to rerun the rules on the latest snapshot.
-
-## Rule thresholds
-
-| Condition | Detected problem |
+| Feature | Description |
 |---|---|
-| CPU usage above 85% | High CPU Usage |
-| RAM usage above 85% | High Memory Usage |
-| Available RAM below 1 GB | Very Low Available Memory |
-| Windows disk usage above 90% | Disk Almost Full |
-| No active adapter with a normal local IPv4 address | Network Unavailable |
-| DHCP Client or DNS Client is reported stopped | Essential Network Service Stopped |
+| 🔍 **Real-time Monitoring** | Multi-threaded polling for Windows services, Event Log crashes, CPU/RAM/Disk metrics |
+| ⚡ **170+ Deterministic Repairs** | 100% verified PowerShell scripts covering Windows Update, Network, Security, and Storage |
+| 🎓 **College Lab Monitor** | 1 Admin PC monitors all student PCs on the LAN with live telemetry and 1-click remote fix |
+| 🛠️ **10 Major College Lab Fixes** | USB drive unlock, Task Manager/CMD policy unlock, Proxy reset, XAMPP port 80, MySQL port 3306, compiler PATHs |
+| 🤖 **Local AI Diagnosis** | Uses Ollama (`qwen3:4b-instruct` / `llama3.2`) running 100% offline and private |
+| 🧠 **Autonomous Self-Learning** | AI-generated fixes are saved into `data/learned_errors.json` and reused automatically |
+| 🔔 **Windows 11 Toast Alerts** | Clean slide-in notifications in the bottom-right corner with 30s countdown |
+| 🛠 **One-Click Real Repair** | Direct administrative PowerShell execution (`-ExecutionPolicy Bypass`) |
+| 📊 **Modern Dark Dashboard** | Real-time hardware gauges, service status, and active error management |
+| 🌐 **Network Diagnostics** | Full gateway ping, DNS resolution, and latency diagnostics |
+| 📄 **System Health Reports** | Generates exportable, styled HTML diagnostic reports |
+| 🎭 **Judge Demo Mode** | Safely simulates real Windows errors to demonstrate detection → alert → repair flow |
 
-## Current limitations
+---
 
-- The rules use one point-in-time snapshot and are intentionally simple.
-- Network availability is inferred from local adapter state; the prototype does not contact the internet.
-- Service details may be unavailable because of Windows permissions or platform support.
-- The AI explanation is predefined text, not a real language model response.
-- The application recommends actions but never executes repairs.
-- There is no event-log analysis, history database, authentication, installer, or background monitoring yet.
+## 🚀 Quick Install (End Users & Lab Setup)
 
-## Planned next phases
+1. Run **`SmartFix_Setup.exe`** from `dist\installer\` 
+2. The installer automatically downloads and silently provisions:
+   - Visual C++ 2015–2022 Redistributable (x64)
+   - Python 3.11.9 (with PATH configured)
+   - All libraries (`PyQt6`, `psutil`, `httpx`, `pywin32`, `WMI`, `Pillow`, `pystray`, `plyer`)
+   - Ollama AI engine & local LLM model
+   - Windows Defender Firewall rules for Lab Monitor (TCP 7771, UDP 7772)
+   - Windows auto-start on boot
+3. SmartFix AI launches automatically and runs in the Windows System Tray.
 
-The complete project architecture is planned as:
+---
 
-> User Reports Problem → System Data Collection → Rule-Based Analysis → AI/LLM Diagnosis → Recommended Repair → User Approval → Repair Execution → Post-Repair Verification
+## 🖥️ Computer Lab Monitor (Dynamic Admin & Workstation Setup)
 
-Future modules will include:
+SmartFix AI uses the **exact same installer** across all computers in the local network:
 
-- Windows Event Log analysis
-- WMI integration for deeper hardware, driver, and operating-system details
-- AI diagnosis using a local Ollama/Qwen model
-- Correlation between user-reported symptoms, system data, and event logs
-- Controlled repair engine with allow-listed actions
-- Clear user approval before every system change
-- Logging, rollback planning, and safety controls
-- Post-repair verification and before/after health comparison
+1. **Any PC can be Admin (Central Controller)**:
+   - Go to **🖥 Lab Monitor** in the sidebar.
+   - Click **`🛡 Set as Admin (Central Controller)`** or use **`⇄ Switch Role`**.
+   - Authenticate with the Admin Passkey.
+   - The dashboard opens the Lab Central Controller, listening for workstations and displaying live telemetry.
 
-## Suggested progress-demo talking points
+2. **Any PC can be a Client (Workstation)**:
+   - Go to **🖥 Lab Monitor** in the sidebar.
+   - Click **`💻 Set as Client (Workstation)`**.
+   - Enter a unique seat name (defaults to `PC-<HOSTNAME>`).
+   - The workstation automatically broadcasts its presence and telemetry on the LAN (UDP 7772).
 
-**Completed:** modular system collection, explainable rule engine, professional prototype GUI, diagnosis severity, safe recommendations, simulated AI text, and basic error handling.
+3. **Dynamic Role Switching & Demotion**:
+   - An Admin PC can switch back to Client mode at any time using **`💻 Switch this PC to Client`** or **`⇄ Switch Role`** (requires admin passkey).
+   - A Client PC can be promoted to Admin anytime by clicking **`🛡 Promote this PC to Admin`** and entering the Admin Passkey.
 
-**Under development:** broader diagnostic rules, more accurate process analysis, Windows service coverage, user problem input, and scan-history storage.
+4. **Passkey Management & Authentication**:
+   - Remote repairs and admin elevation are secured with SHA-256 passkey verification.
+   - Change the passkey at any time via the **`🔑 Passkey`** button on the Lab Monitor header.
 
-**Next phase:** Event Log and WMI collectors, real local LLM integration through Ollama/Qwen, then a permission-controlled repair-and-verification workflow.
+5. **Remote Diagnostic & One-Click Repair**:
+   - If any workstation PC encounters an issue, its card flags the error on the Admin's screen.
+   - The administrator clicks **`🔧 Fix Remotely`** or uses the on-demand maintenance toolbox to execute authenticated repairs over TCP 7771.
 
-> Safety note: This prototype is diagnostic and read-only. Recommendations should still be reviewed before a user performs them manually.
+---
+
+## 🏗 Project Architecture
+
+```
+SmartFix-AI/
+├── smartfix_app.py          ← Main application (PyQt6 UI + system tray + lab page)
+├── SmartFix AI.exe          ← C# .NET launcher stub with UAC administrator manifest
+├── BUILD_INSTALLER.bat      ← 1-Click Inno Setup builder script
+├── SmartFix_Installer.iss   ← Inno Setup configuration script
+├── install_helper.ps1       ← Silent dependency installer (Python, Ollama, model, firewall)
+├── requirements.txt         ← Python dependencies
+├── monitor/
+│   ├── monitor.py           ← Multi-threaded background monitoring engine
+│   ├── error_catalog.py     ← 170 Windows error definitions
+│   ├── repair_engine.py     ← 100% verified PowerShell repair functions
+│   ├── repair_advanced.py   ← BCD, bootmgr, WMI salvage, and registry repairs
+│   ├── difficult_errors.py  ← BSOD bugcheck analyzers & crash dump definitions
+│   ├── lab_config.py        ← LAN protocol (JSON framing), ports (7771, 7772), config
+│   ├── lab_agent.py         ← Client Agent: UDP 7772 broadcaster & TCP 7771 listener
+│   ├── lab_admin.py         ← Admin Manager: discovery listener, polling & remote fix
+│   ├── llm_assistant.py     ← Ollama local AI client (dynamic model detection + fallback)
+│   ├── learned_repairs.py   ← Self-learning database manager (learned_errors.json)
+│   ├── ai_dialog.py         ← Interactive AI technical assistant dialog
+│   ├── demo_mode.py         ← Safe error simulation engine for judge presentations
+│   ├── history.py           ← SQLite database logger (smartfix_history.db)
+│   └── network_diag.py      ← Network ping, DNS, and latency tests
+└── data/
+    ├── smartfix_history.db  ← SQLite database of repair history
+    ├── learned_errors.json  ← Persisted AI-learned repairs
+    └── lab_config.json      ← Persistent lab seat name and role
+```
+
+---
+
+## 📦 Building the Installer
+
+```bat
+# Requires Inno Setup 6 (auto-detected in AppData or Program Files)
+BUILD_INSTALLER.bat
+# Output: dist\installer\SmartFix_Setup.exe
+```
+
+---
+
+## 🎓 Academic Project
+
+Developed as a **B.E. Final Year Major Project** — *Autonomous Windows System Administration and Multi-PC Lab Monitor with Local LLM Self-Learning*.
+
+---
+
+## 📄 License
+
+Copyright (c) 2026 Chirag Patil. Released under the [MIT License](LICENSE).

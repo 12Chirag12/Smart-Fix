@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# Database / runtime data
+*.db
+*.sqlite3
+data/learned_errors.json
+data/lab_config.json
+data/*.db
+
+# Logs
+logs/
+*.log
+install_log.txt
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.gemini/
+
+# Node / old frontend (archived)
+node_modules/
+dist-electron/
+
+# Windows
+Thumbs.db
+Desktop.ini
