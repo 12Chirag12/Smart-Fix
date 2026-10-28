@@ -1,6 +1,7 @@
 """
 SmartFix AI — Background Monitor Daemon
-Continuously watches Windows for errors matching the 90-error catalog.
+Continuously watches Windows for errors matching the error catalog.
+Features thread watchdog for automatic crash recovery.
 """
 import threading
 import time
@@ -24,12 +25,14 @@ logger = logging.getLogger("smartfix.monitor")
 CHECK_INTERVAL_SECONDS  = int(os.getenv("SMARTFIX_MONITOR_INTERVAL", "30")) # How often each monitor thread polls
 ALERT_COOLDOWN_SECONDS  = 1800      # 30 min default — prevents same alert re-firing after fix
 EVENT_LOOKBACK_MINUTES  = 5         # Look back this far in Windows Event Log
+WATCHDOG_INTERVAL       = 30        # How often the watchdog checks thread health
 
 
 class BackgroundMonitor:
     """
     Always-on background monitor. Runs check loops in daemon threads.
     Calls on_alert(error_info) when an error is detected.
+    Includes a watchdog thread that auto-restarts crashed monitor threads.
     """
 
     def __init__(self, on_alert: Callable[[Dict[str, Any]], None], check_interval: int = CHECK_INTERVAL_SECONDS):
@@ -41,12 +44,35 @@ class BackgroundMonitor:
         self._cooldown_lock = threading.Lock()
         self._demo_mode = False
 
-    
-    
-    
+        # ── Thread health tracking ────────────────────────────────────────────
+        self._thread_registry: Dict[str, Dict[str, Any]] = {}
+        self._registry_lock = threading.Lock()
+        self._thread_restart_counts: Dict[str, int] = {}
+        self._max_restarts = 5  # Max auto-restarts before giving up on a thread
+
+    # ── Thread Health API (for self-health dashboard) ─────────────────────────
+
+    def get_thread_health(self) -> Dict[str, Dict[str, Any]]:
+        """Return health status of all monitor threads (for UI dashboard)."""
+        with self._registry_lock:
+            result = {}
+            for name, info in self._thread_registry.items():
+                thread = info.get("thread")
+                result[name] = {
+                    "alive": thread.is_alive() if thread else False,
+                    "restarts": self._thread_restart_counts.get(name, 0),
+                    "target": info.get("target_name", "unknown"),
+                }
+            return result
+
+    def get_alive_thread_count(self) -> tuple:
+        """Return (alive_count, total_count) for status bar."""
+        health = self.get_thread_health()
+        alive = sum(1 for v in health.values() if v["alive"])
+        return alive, len(health)
 
     def start(self):
-        """Start all monitor threads."""
+        """Start all monitor threads and the watchdog."""
         if self._running:
             return
         self._running = True
@@ -59,16 +85,85 @@ class BackgroundMonitor:
             ("NetworkMonitor", self._loop_network),
         ]
         for name, target in thread_targets:
-            t = threading.Thread(target=target, name=name, daemon=True)
-            t.start()
-            self._threads.append(t)
+            self._start_thread(name, target)
 
-        logger.info(f"SmartFix Monitor running — {len(self._threads)} threads active")
+        # Start the watchdog thread
+        watchdog = threading.Thread(target=self._watchdog, name="MonitorWatchdog", daemon=True)
+        watchdog.start()
+
+        logger.info(f"SmartFix Monitor running — {len(self._threads)} threads active + watchdog")
 
     def stop(self):
         """Signal all threads to stop."""
         self._running = False
         logger.info("SmartFix Monitor stopping…")
+
+    def _start_thread(self, name: str, target: Callable):
+        """Start a named daemon thread and register it in the health registry."""
+        t = threading.Thread(target=self._guarded_run, args=(name, target), name=name, daemon=True)
+        t.start()
+        self._threads.append(t)
+        with self._registry_lock:
+            self._thread_registry[name] = {
+                "thread": t,
+                "target": target,
+                "target_name": target.__name__,
+                "started_at": datetime.now().isoformat(),
+            }
+            if name not in self._thread_restart_counts:
+                self._thread_restart_counts[name] = 0
+
+    def _guarded_run(self, name: str, target: Callable):
+        """Wrapper that catches any unhandled exception in a monitor thread."""
+        try:
+            target()
+        except Exception as ex:
+            logger.critical(f"[WATCHDOG] Thread {name} crashed with unhandled exception: {ex}", exc_info=True)
+
+    # ── Watchdog ──────────────────────────────────────────────────────────────
+
+    def _watchdog(self):
+        """Monitors all registered threads and auto-restarts any that have died."""
+        logger.info("[WATCHDOG] Thread health monitor started")
+        while self._running:
+            time.sleep(WATCHDOG_INTERVAL)
+            if not self._running:
+                break
+
+            with self._registry_lock:
+                for name, info in list(self._thread_registry.items()):
+                    thread = info.get("thread")
+                    target = info.get("target")
+
+                    if thread and not thread.is_alive() and self._running:
+                        restarts = self._thread_restart_counts.get(name, 0)
+                        if restarts >= self._max_restarts:
+                            logger.error(
+                                f"[WATCHDOG] Thread {name} has crashed {restarts} times — "
+                                f"max restarts ({self._max_restarts}) reached, not restarting"
+                            )
+                            continue
+
+                        self._thread_restart_counts[name] = restarts + 1
+                        logger.warning(
+                            f"[WATCHDOG] Thread {name} found dead — "
+                            f"auto-restarting (attempt {restarts + 1}/{self._max_restarts})"
+                        )
+
+                        # Create and start a new thread
+                        new_t = threading.Thread(
+                            target=self._guarded_run, args=(name, target),
+                            name=f"{name}-R{restarts + 1}", daemon=True
+                        )
+                        new_t.start()
+                        info["thread"] = new_t
+                        info["started_at"] = datetime.now().isoformat()
+
+                        # Update the threads list
+                        self._threads = [t for t in self._threads if t.is_alive()]
+                        self._threads.append(new_t)
+
+    # ── Alert System ──────────────────────────────────────────────────────────
 
     def inject_demo_error(self, error_id: str):
         """Force-trigger an alert for demo purposes (bypasses cooldown)."""
@@ -121,9 +216,7 @@ class BackgroundMonitor:
         logger.warning(f"[ALERT] {error_def['name']} — {error_def['severity']}")
         self.on_alert(payload)
 
-    
-    
-    
+    # ── Service Monitor ───────────────────────────────────────────────────────
 
     def _loop_services(self):
         service_errors = [e for e in CATALOG_LIST if e["detection"]["type"] in ("service", "service_disabled")]
@@ -131,7 +224,7 @@ class BackgroundMonitor:
             try:
                 self._check_services(service_errors)
             except Exception as ex:
-                logger.error(f"Service monitor error: {ex}")
+                logger.error(f"Service monitor error: {ex}", exc_info=True)
             time.sleep(self.check_interval)
 
     def _check_services(self, service_errors: List[Dict]):
@@ -167,9 +260,7 @@ class BackgroundMonitor:
                 if svc_name in disabled_services:
                     self._trigger_alert(err, {"service": svc_name, "status": "DISABLED"})
 
-    
-    
-    
+    # ── Event Log Monitor ─────────────────────────────────────────────────────
 
     def _loop_events(self):
         event_errors = [e for e in CATALOG_LIST if e["detection"]["type"] == "event"]
@@ -177,7 +268,7 @@ class BackgroundMonitor:
             try:
                 self._check_events(event_errors)
             except Exception as ex:
-                logger.error(f"Event monitor error: {ex}")
+                logger.error(f"Event monitor error: {ex}", exc_info=True)
             time.sleep(self.check_interval)
 
     def _check_events(self, event_errors: List[Dict]):
@@ -194,7 +285,7 @@ foreach ($log in $logs) {{
         foreach ($e in $events) {{
             $result += @{{
                 Log=$log; Id=$e.Id; Source=$e.ProviderName; Level=$e.Level;
-                Message=($e.Message -replace '\\n',' ' -replace '\\r','')
+                Message=($e.Message -replace '\\\\n',' ' -replace '\\\\r','')
                 Time=$e.TimeCreated.ToString('o')
             }}
         }}
@@ -251,9 +342,7 @@ $result | ConvertTo-Json -Compress
                 })
                 break  
 
-    
-    
-    
+    # ── Metric Monitor ────────────────────────────────────────────────────────
 
     def _loop_metrics(self):
         metric_errors = [e for e in CATALOG_LIST if e["detection"]["type"] == "metric"]
@@ -304,7 +393,7 @@ $result | ConvertTo-Json -Compress
                 self._check_temp_clutter()
 
             except Exception as ex:
-                logger.error(f"Metric monitor error: {ex}")
+                logger.error(f"Metric monitor error: {ex}", exc_info=True)
 
             time.sleep(self.check_interval)
 
@@ -359,9 +448,7 @@ $result | ConvertTo-Json -Compress
         except Exception as ex:
             logger.debug(f"Temp clutter check error: {ex}")
 
-    
-    
-    
+    # ── Network Monitor ───────────────────────────────────────────────────────
 
     def _loop_network(self):
         net_errors = [e for e in CATALOG_LIST if e["detection"]["type"] in (
@@ -371,7 +458,7 @@ $result | ConvertTo-Json -Compress
             try:
                 self._check_network(net_errors)
             except Exception as ex:
-                logger.error(f"Network monitor error: {ex}")
+                logger.error(f"Network monitor error: {ex}", exc_info=True)
             time.sleep(self.check_interval * 2)  
 
     def _check_network(self, net_errors: List[Dict]):
