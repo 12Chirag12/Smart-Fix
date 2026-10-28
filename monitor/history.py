@@ -57,6 +57,11 @@ def init_db():
                 success INTEGER DEFAULT 0
             )
         """)
+        # Schema migration: ensure success column exists in older database files
+        try:
+            conn.execute("ALTER TABLE restore_points ADD COLUMN success INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 

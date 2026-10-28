@@ -52,6 +52,23 @@ def repair(repair_id: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Repair Aliases & Mapping
+# Maps legacy/shorthand repair names to canonical implementations
+# ══════════════════════════════════════════════════════════════════════════════
+
+REPAIR_ALIASES: Dict[str, str] = {
+    "flush_dns_and_renew":     "flush_dns_reset_config",
+    "reset_network_stack":     "reset_winsock_tcpip",
+    "restart_audio_service":   "restart_audio_services",
+    "restart_bluetooth":       "restart_bluetooth_service",
+    "restart_defender":        "enable_windows_defender",
+    "enable_defender":         "enable_windows_defender",
+    "enable_windows_firewall": "restart_windows_firewall",
+    "fix_audio_endpoint":      "restart_audio_endpoint",
+    "fix_bluetooth_driver":    "restart_bluetooth_service",
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Post-Repair Verification Registry
 # Maps repair_id -> PowerShell verification command + expected output substring
 # ══════════════════════════════════════════════════════════════════════════════
@@ -62,23 +79,30 @@ REPAIR_VERIFIERS: Dict[str, Dict[str, str]] = {
     "enable_windows_update":          {"cmd": "(Get-Service wuauserv).Status",        "expect": "Running"},
     "restart_bits":                   {"cmd": "(Get-Service BITS).Status",            "expect": "Running"},
     # Network repairs
+    "flush_dns_reset_config":         {"cmd": "Resolve-DnsName google.com -ErrorAction SilentlyContinue | Select -First 1", "expect": "google"},
     "flush_dns_and_renew":            {"cmd": "Resolve-DnsName google.com -ErrorAction SilentlyContinue | Select -First 1", "expect": "google"},
+    "reset_winsock_tcpip":            {"cmd": "Test-Connection 8.8.8.8 -Count 1 -Quiet", "expect": "True"},
     "reset_network_stack":            {"cmd": "Test-Connection 8.8.8.8 -Count 1 -Quiet", "expect": "True"},
     # Service repairs
+    "restart_audio_services":         {"cmd": "(Get-Service Audiosrv).Status",        "expect": "Running"},
     "restart_audio_service":          {"cmd": "(Get-Service Audiosrv).Status",        "expect": "Running"},
     "restart_print_spooler":          {"cmd": "(Get-Service Spooler).Status",         "expect": "Running"},
+    "restart_bluetooth_service":      {"cmd": "(Get-Service bthserv).Status",         "expect": "Running"},
     "restart_bluetooth":              {"cmd": "(Get-Service bthserv).Status",         "expect": "Running"},
     "fix_time_sync":                  {"cmd": "(Get-Service W32Time).Status",         "expect": "Running"},
     "restart_defender":               {"cmd": "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status", "expect": "Running"},
+    "enable_windows_defender":        {"cmd": "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status", "expect": "Running"},
     "enable_defender":                {"cmd": "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status", "expect": "Running"},
     # Firewall
+    "restart_windows_firewall":       {"cmd": "(Get-NetFirewallProfile -Profile Domain).Enabled", "expect": "True"},
     "enable_windows_firewall":        {"cmd": "(Get-NetFirewallProfile -Profile Domain).Enabled", "expect": "True"},
 }
 
 
 def _verify_repair(repair_id: str) -> Tuple[bool, str]:
     """Run post-repair verification to confirm the fix actually worked."""
-    verifier = REPAIR_VERIFIERS.get(repair_id)
+    canonical_id = REPAIR_ALIASES.get(repair_id, repair_id)
+    verifier = REPAIR_VERIFIERS.get(canonical_id) or REPAIR_VERIFIERS.get(repair_id)
     if not verifier:
         return True, "No verifier defined — trusting returncode."
     try:
@@ -100,10 +124,13 @@ def _verify_repair(repair_id: str) -> Tuple[bool, str]:
 ESCALATION_CHAINS: Dict[str, List[str]] = {
     "restart_windows_update":   ["enable_windows_update", "reset_windows_update_components", "run_dism_restore_health"],
     "enable_windows_update":    ["reset_windows_update_components", "run_dism_restore_health"],
-    "flush_dns_and_renew":      ["reset_network_stack"],
-    "reset_network_proxy_wua":  ["reset_network_stack"],
-    "restart_audio_service":    ["fix_audio_endpoint"],
-    "restart_bluetooth":        ["fix_bluetooth_driver"],
+    "flush_dns_reset_config":   ["reset_winsock_tcpip", "diagnose_adapter_gateway_dns"],
+    "flush_dns_and_renew":      ["reset_winsock_tcpip", "diagnose_adapter_gateway_dns"],
+    "reset_network_proxy_wua":  ["reset_winsock_tcpip"],
+    "restart_audio_services":   ["restart_audio_endpoint", "reinstall_audio_driver"],
+    "restart_audio_service":    ["restart_audio_endpoint", "reinstall_audio_driver"],
+    "restart_bluetooth_service":["restart_bluetooth_service"],
+    "restart_bluetooth":        ["restart_bluetooth_service"],
     "restart_bits":             ["reset_windows_update_components"],
     "run_sfc_scannow":          ["run_dism_restore_health"],
 }
@@ -1824,7 +1851,7 @@ def execute_repair(repair_id: str, severity: str = "", enable_retry: bool = True
     4. Post-repair verification
     5. Auto-escalation if primary repair fails
     """
-    target_id = repair_id
+    target_id = REPAIR_ALIASES.get(repair_id, repair_id)
     fn = REPAIR_FUNCTIONS.get(target_id)
     if not fn:
         try:

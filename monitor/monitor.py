@@ -219,7 +219,7 @@ class BackgroundMonitor:
     # ── Service Monitor ───────────────────────────────────────────────────────
 
     def _loop_services(self):
-        service_errors = [e for e in CATALOG_LIST if e["detection"]["type"] in ("service", "service_disabled")]
+        service_errors = [e for e in CATALOG_LIST if e.get("detection") and e["detection"].get("type") in ("service", "service_disabled")]
         while self._running:
             try:
                 self._check_services(service_errors)
@@ -263,7 +263,7 @@ class BackgroundMonitor:
     # ── Event Log Monitor ─────────────────────────────────────────────────────
 
     def _loop_events(self):
-        event_errors = [e for e in CATALOG_LIST if e["detection"]["type"] == "event"]
+        event_errors = [e for e in CATALOG_LIST if e.get("detection") and e["detection"].get("type") == "event"]
         while self._running:
             try:
                 self._check_events(event_errors)
@@ -345,7 +345,7 @@ $result | ConvertTo-Json -Compress
     # ── Metric Monitor ────────────────────────────────────────────────────────
 
     def _loop_metrics(self):
-        metric_errors = [e for e in CATALOG_LIST if e["detection"]["type"] == "metric"]
+        metric_errors = [e for e in CATALOG_LIST if e.get("detection") and e["detection"].get("type") == "metric"]
         
         cpu_high_count = 0
         while self._running:
@@ -451,7 +451,7 @@ $result | ConvertTo-Json -Compress
     # ── Network Monitor ───────────────────────────────────────────────────────
 
     def _loop_network(self):
-        net_errors = [e for e in CATALOG_LIST if e["detection"]["type"] in (
+        net_errors = [e for e in CATALOG_LIST if e.get("detection") and e["detection"].get("type") in (
             "dns_check", "dns_timeout", "internet_check", "network_connectivity", "ip_check", "gateway_check"
         )]
         while self._running:
