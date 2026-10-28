@@ -2711,7 +2711,98 @@ def ensure_windows_autostart():
         logger.warning(f"ensure_windows_autostart failed: {e}")
 
 
+# ── Startup Health Check ──────────────────────────────────────────────────────
+
+def startup_health_check() -> list:
+    """Validate critical dependencies and configuration on startup.
+    Returns a list of (level, message) tuples: level = 'OK', 'WARN', 'ERROR'."""
+    import sqlite3
+    checks = []
+
+    # 1. .env file
+    if os.path.exists(_env_path):
+        checks.append(("OK", ".env configuration loaded"))
+    else:
+        checks.append(("WARN", ".env file not found — using default settings"))
+
+    # 2. Data directory writable
+    data_dir = os.path.join(ROOT, "data")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        test_file = os.path.join(data_dir, ".write_test")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        os.remove(test_file)
+        checks.append(("OK", "Data directory is writable"))
+    except Exception as e:
+        checks.append(("ERROR", f"Data directory is NOT writable: {e}"))
+
+    # 3. SQLite database integrity
+    try:
+        db_path = os.path.join(data_dir, "smartfix_history.db")
+        conn = sqlite3.connect(db_path)
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        conn.close()
+        if result and result[0] == "ok":
+            checks.append(("OK", "SQLite database integrity verified"))
+        else:
+            checks.append(("WARN", f"SQLite integrity check returned: {result}"))
+    except Exception as e:
+        checks.append(("WARN", f"SQLite database check failed: {e}"))
+
+    # 4. Lab ports availability (non-blocking check)
+    for port_name, port_num in [("LAB_PORT", 7771), ("DISCOVERY_PORT", 7772)]:
+        import socket as _sock
+        try:
+            port_num = int(os.getenv(f"SMARTFIX_{port_name}", str(port_num)))
+            test_sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            test_sock.settimeout(0.5)
+            test_sock.bind(("0.0.0.0", port_num))
+            test_sock.close()
+            checks.append(("OK", f"Port {port_num} ({port_name}) available"))
+        except OSError:
+            checks.append(("WARN", f"Port {port_num} ({port_name}) already in use"))
+        except Exception:
+            pass
+
+    # 5. Ollama reachability (non-blocking)
+    try:
+        from monitor.llm_assistant import is_ollama_available, get_installed_model
+        if is_ollama_available():
+            model = get_installed_model()
+            checks.append(("OK", f"Ollama reachable — model: {model or 'none detected'}"))
+        else:
+            checks.append(("WARN", "Ollama not reachable — AI diagnosis will use fallback engine"))
+    except Exception:
+        checks.append(("WARN", "Ollama check skipped"))
+
+    # 6. Log file writable
+    log_file = os.path.join(data_dir, "smartfix.log")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            pass
+        checks.append(("OK", f"Log file writable: {log_file}"))
+    except Exception:
+        checks.append(("WARN", "Log file not writable — file logging disabled"))
+
+    return checks
+
+
 def main():
+    # 0. Run startup health check
+    health_results = startup_health_check()
+    for level, msg in health_results:
+        if level == "ERROR":
+            logger.error(f"[STARTUP] {msg}")
+        elif level == "WARN":
+            logger.warning(f"[STARTUP] {msg}")
+        else:
+            logger.info(f"[STARTUP] {msg}")
+
+    errors = [msg for level, msg in health_results if level == "ERROR"]
+    if errors:
+        logger.critical(f"[STARTUP] {len(errors)} critical error(s) detected — app may not function correctly")
+
     # 1. Detect if started in background / autostart mode on PC boot
     is_background = any(
         arg.lower() in ("--background", "--minimized", "--tray", "--autostart")
