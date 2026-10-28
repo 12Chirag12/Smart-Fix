@@ -23,7 +23,7 @@ from monitor.lab_config import (
     MSG_REPAIR, MSG_REPAIR_RESULT,
     get_known_clients, save_known_clients,
     send_message, recv_message, make_message, parse_message,
-    get_auth_token
+    get_auth_token, verify_discovery_message
 )
 
 
@@ -196,7 +196,12 @@ class LabAdminManager:
         while self._running:
             try:
                 data, addr = sock.recvfrom(4096)
-                msg = json.loads(data.decode("utf-8"))
+                raw_msg = json.loads(data.decode("utf-8"))
+                # Verify HMAC-signed discovery message (backwards-compatible with unsigned)
+                msg = verify_discovery_message(raw_msg)
+                if msg is None:
+                    logger.debug(f"[LabAdmin] Rejected unsigned/tampered discovery from {addr[0]}")
+                    continue
                 if msg.get("type") == "ANNOUNCE":
                     seat = msg.get("seat", "")
                     ip   = addr[0]   # Use actual sender IP, not what they claim

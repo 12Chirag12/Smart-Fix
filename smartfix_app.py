@@ -66,8 +66,26 @@ from monitor.lab_admin import LabAdminManager, ClientInfo
 
 _log_level_str = os.getenv("SMARTFIX_LOG_LEVEL", "INFO").upper()
 _log_level = getattr(logging, _log_level_str, logging.INFO)
-logging.basicConfig(level=_log_level,
-                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+# Console logging
+logging.basicConfig(level=_log_level, format=_log_format)
+
+# File logging with rotation (5 MB per file, keep 3 backups)
+try:
+    import logging.handlers
+    _log_dir = os.path.join(ROOT, "data")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = os.path.join(_log_dir, "smartfix.log")
+    _file_handler = logging.handlers.RotatingFileHandler(
+        _log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    _file_handler.setLevel(_log_level)
+    _file_handler.setFormatter(logging.Formatter(_log_format))
+    logging.getLogger().addHandler(_file_handler)
+except Exception:
+    pass  # File logging is non-critical — degrade gracefully
+
 logger = logging.getLogger("smartfix.app")
 
 
@@ -145,12 +163,13 @@ QTextEdit {{
 class RepairWorker(QThread):
     finished = pyqtSignal(dict)
 
-    def __init__(self, repair_id: str):
+    def __init__(self, repair_id: str, severity: str = ""):
         super().__init__()
         self.repair_id = repair_id
+        self.severity = severity
 
     def run(self):
-        result = execute_repair(self.repair_id)
+        result = execute_repair(self.repair_id, severity=self.severity)
         self.finished.emit(result)
 
 
@@ -444,8 +463,9 @@ class RepairDialog(QDialog):
         layout.addWidget(self.close_btn, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _start_repair(self):
-        self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] Starting repair: {self.repair_id}")
-        self.worker = RepairWorker(self.repair_id)
+        severity = self.error_info.get("severity", "")
+        self.log_box.append(f"[{datetime.now().strftime('%H:%M:%S')}] Starting repair: {self.repair_id} (severity: {severity})")
+        self.worker = RepairWorker(self.repair_id, severity=severity)
         self.worker.finished.connect(self._on_repair_done)
         self.worker.start()
 

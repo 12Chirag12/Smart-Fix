@@ -23,7 +23,7 @@ from monitor.lab_config import (
     MSG_REPAIR, MSG_REPAIR_RESULT,
     get_seat_name, get_local_ip,
     send_message, recv_message, make_message, parse_message,
-    verify_auth_token, DISCOVERY_PORT
+    verify_auth_token, DISCOVERY_PORT, sign_discovery_message
 )
 
 logger = logging.getLogger("smartfix.lab_agent")
@@ -194,19 +194,21 @@ class LabClientAgent:
     # ── UDP Broadcast ─────────────────────────────────────────────────────────
 
     def _broadcast_loop(self):
-        """Broadcast this client's presence on UDP so admin can discover it."""
+        """Broadcast this client's presence on UDP with HMAC signature so admin can discover it."""
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
         while self._running:
             try:
-                data = json.dumps({
+                announce_data = {
                     "type": "ANNOUNCE",
                     "seat": get_seat_name(),
                     "ip": get_local_ip(),
                     "port": LAB_PORT,
-                }).encode("utf-8")
+                }
+                signed = sign_discovery_message(announce_data)
+                data = json.dumps(signed).encode("utf-8")
                 sock.sendto(data, ("<broadcast>", BROADCAST_PORT))
             except Exception as ex:
                 logger.debug(f"[LabAgent] Broadcast error: {ex}")
