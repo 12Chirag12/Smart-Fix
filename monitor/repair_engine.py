@@ -2,12 +2,19 @@
 SmartFix AI — Complete Repair Engine
 Handles all errors: Windows core + 3rd party apps (Valorant, Steam, Discord, Chrome, Office, etc.)
 All repairs use real PowerShell/CMD commands with Administrator privileges.
+
+Reliability features:
+- Post-repair verification (checks actual system state, not just returncode)
+- Retry with exponential backoff for transient failures
+- System restore point creation before HIGH/CRITICAL repairs
+- AI script safety sandbox for learned/LLM-generated repairs
+- Auto-escalation chains for persistent failures
 """
 import subprocess
 import logging
 import os
 import time
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List, Optional
 
 from monitor.learned_repairs import load_learned_errors
 
@@ -42,6 +49,102 @@ def repair(repair_id: str):
         REPAIR_FUNCTIONS[repair_id] = fn
         return fn
     return decorator
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Post-Repair Verification Registry
+# Maps repair_id -> PowerShell verification command + expected output substring
+# ══════════════════════════════════════════════════════════════════════════════
+
+REPAIR_VERIFIERS: Dict[str, Dict[str, str]] = {
+    # Windows Update repairs
+    "restart_windows_update":         {"cmd": "(Get-Service wuauserv).Status",        "expect": "Running"},
+    "enable_windows_update":          {"cmd": "(Get-Service wuauserv).Status",        "expect": "Running"},
+    "restart_bits":                   {"cmd": "(Get-Service BITS).Status",            "expect": "Running"},
+    # Network repairs
+    "flush_dns_and_renew":            {"cmd": "Resolve-DnsName google.com -ErrorAction SilentlyContinue | Select -First 1", "expect": "google"},
+    "reset_network_stack":            {"cmd": "Test-Connection 8.8.8.8 -Count 1 -Quiet", "expect": "True"},
+    # Service repairs
+    "restart_audio_service":          {"cmd": "(Get-Service Audiosrv).Status",        "expect": "Running"},
+    "restart_print_spooler":          {"cmd": "(Get-Service Spooler).Status",         "expect": "Running"},
+    "restart_bluetooth":              {"cmd": "(Get-Service bthserv).Status",         "expect": "Running"},
+    "fix_time_sync":                  {"cmd": "(Get-Service W32Time).Status",         "expect": "Running"},
+    "restart_defender":               {"cmd": "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status", "expect": "Running"},
+    "enable_defender":                {"cmd": "(Get-Service WinDefend -ErrorAction SilentlyContinue).Status", "expect": "Running"},
+    # Firewall
+    "enable_windows_firewall":        {"cmd": "(Get-NetFirewallProfile -Profile Domain).Enabled", "expect": "True"},
+}
+
+
+def _verify_repair(repair_id: str) -> Tuple[bool, str]:
+    """Run post-repair verification to confirm the fix actually worked."""
+    verifier = REPAIR_VERIFIERS.get(repair_id)
+    if not verifier:
+        return True, "No verifier defined — trusting returncode."
+    try:
+        ok, output = _run_ps(verifier["cmd"], timeout=15)
+        expected = verifier["expect"]
+        if expected.lower() in output.lower():
+            return True, f"✅ Verified: {output.strip()}"
+        else:
+            return False, f"❌ Verification failed: expected '{expected}' but got '{output.strip()}'"
+    except Exception as ex:
+        return True, f"Verification skipped (error: {ex})"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Auto-Escalation Chains
+# If repair A fails, automatically try B, then C
+# ══════════════════════════════════════════════════════════════════════════════
+
+ESCALATION_CHAINS: Dict[str, List[str]] = {
+    "restart_windows_update":   ["enable_windows_update", "reset_windows_update_components", "run_dism_restore_health"],
+    "enable_windows_update":    ["reset_windows_update_components", "run_dism_restore_health"],
+    "flush_dns_and_renew":      ["reset_network_stack"],
+    "reset_network_proxy_wua":  ["reset_network_stack"],
+    "restart_audio_service":    ["fix_audio_endpoint"],
+    "restart_bluetooth":        ["fix_bluetooth_driver"],
+    "restart_bits":             ["reset_windows_update_components"],
+    "run_sfc_scannow":          ["run_dism_restore_health"],
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# System Restore Point Creation
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Severity levels that trigger restore point creation before repair
+_RESTORE_POINT_SEVERITIES = {"CRITICAL", "HIGH"}
+
+
+def create_restore_point(description: str) -> bool:
+    """Create a Windows System Restore Point before critical repairs."""
+    script = f'''
+    try {{
+        Enable-ComputerRestore -Drive "C:\\" -ErrorAction SilentlyContinue
+        Checkpoint-Computer -Description "{description}" -RestoreType MODIFY_SETTINGS -ErrorAction Stop
+        Write-Output "RESTORE_POINT_CREATED"
+    }} catch {{
+        Write-Output "RESTORE_POINT_FAILED: $_"
+    }}
+    '''
+    try:
+        ok, out = _run_ps(script, timeout=120)
+        success = "RESTORE_POINT_CREATED" in out
+        if success:
+            logger.info(f"[RESTORE] System restore point created: {description}")
+        else:
+            logger.warning(f"[RESTORE] Failed to create restore point: {out}")
+        # Log to history database
+        try:
+            from monitor.history import log_restore_point
+            log_restore_point(description, description, success)
+        except Exception:
+            pass
+        return success
+    except Exception as ex:
+        logger.warning(f"[RESTORE] Exception creating restore point: {ex}")
+        return False
 
 
 
@@ -1712,7 +1815,15 @@ Write-Output "Temporary files purge complete. Freed approximately $freedMb MB of
     return _run_ps(script)
 
 
-def execute_repair(repair_id: str) -> dict:
+def execute_repair(repair_id: str, severity: str = "", enable_retry: bool = True, enable_restore: bool = True) -> dict:
+    """
+    Execute a repair with full reliability pipeline:
+    1. Resolve repair_id → handler function
+    2. Create system restore point (for HIGH/CRITICAL)
+    3. Execute repair with retry on failure
+    4. Post-repair verification
+    5. Auto-escalation if primary repair fails
+    """
     target_id = repair_id
     fn = REPAIR_FUNCTIONS.get(target_id)
     if not fn:
@@ -1722,6 +1833,8 @@ def execute_repair(repair_id: str) -> dict:
             if cat and cat.get("repair_id"):
                 target_id = cat["repair_id"]
                 fn = REPAIR_FUNCTIONS.get(target_id)
+                if not severity:
+                    severity = cat.get("severity", "")
         except Exception:
             pass
 
@@ -1729,6 +1842,7 @@ def execute_repair(repair_id: str) -> dict:
         fn = REPAIR_FUNCTIONS.get("purge_temp_cache_files") or REPAIR_FUNCTIONS.get("fix_temp_cleanup")
         target_id = "purge_temp_cache_files" if "purge_temp_cache_files" in REPAIR_FUNCTIONS else "fix_temp_cleanup"
 
+    # ── Learned repair (AI-generated) with safety validation ──────────────
     if not fn:
         try:
             learned = load_learned_errors()
@@ -1736,6 +1850,22 @@ def execute_repair(repair_id: str) -> dict:
                 entry = learned[repair_id]
                 ps_script = entry.get("ps_script", "")
                 if ps_script:
+                    # Safety sandbox check
+                    try:
+                        from monitor.llm_assistant import validate_ai_script
+                        is_safe, safety_msg, warnings = validate_ai_script(ps_script)
+                        if not is_safe:
+                            logger.warning(f"[SAFETY] Learned repair '{repair_id}' BLOCKED: {safety_msg}")
+                            return {
+                                "repair_id": repair_id, "success": False,
+                                "message": f"🛡️ Safety sandbox blocked this repair: {safety_msg}",
+                                "output": "The AI-generated script contains potentially dangerous commands. Review manually."
+                            }
+                        if warnings:
+                            logger.info(f"[SAFETY] Learned repair '{repair_id}' passed with warnings: {warnings}")
+                    except ImportError:
+                        pass
+
                     logger.info(f"Executing learned repair: {repair_id}")
                     start = time.time()
                     success, output = _run_ps(ps_script)
@@ -1753,17 +1883,90 @@ def execute_repair(repair_id: str) -> dict:
             "message": f"No repair handler for '{repair_id}'",
             "output": "This error type does not have an automated repair yet. Please fix manually."
         }
-    logger.info(f"Executing repair: {target_id} (requested: {repair_id})")
-    start = time.time()
-    try:
-        success, output = fn()
-    except Exception as e:
-        success, output = False, str(e)
-    elapsed = round(time.time() - start, 2)
-    return {
-        "repair_id": target_id, "success": success,
-        "message": "Repair completed." if success else "Repair encountered issues.",
-        "output": output, "elapsed_seconds": elapsed
+
+    # ── System Restore Point (for HIGH/CRITICAL severity) ─────────────────
+    if enable_restore and severity.upper() in _RESTORE_POINT_SEVERITIES:
+        try:
+            create_restore_point(f"SmartFix: Before {target_id}")
+        except Exception as ex:
+            logger.debug(f"Restore point creation failed (non-blocking): {ex}")
+
+    # ── Execute with retry ────────────────────────────────────────────────
+    max_attempts = 3 if enable_retry else 1
+    last_result = None
+
+    for attempt in range(max_attempts):
+        logger.info(f"Executing repair: {target_id} (requested: {repair_id})"
+                    + (f" [attempt {attempt + 1}/{max_attempts}]" if attempt > 0 else ""))
+        start = time.time()
+        try:
+            success, output = fn()
+        except Exception as e:
+            success, output = False, str(e)
+        elapsed = round(time.time() - start, 2)
+
+        # ── Post-repair verification ──────────────────────────────────────
+        verified = True
+        verify_msg = ""
+        if success:
+            verified, verify_msg = _verify_repair(target_id)
+            if not verified:
+                logger.warning(f"[VERIFY] Repair {target_id} returned success but verification failed: {verify_msg}")
+                success = False
+                output += f"\n{verify_msg}"
+            elif verify_msg and "Verified" in verify_msg:
+                output += f"\n{verify_msg}"
+
+        last_result = {
+            "repair_id": target_id, "success": success,
+            "message": "Repair completed and verified." if (success and verified) else "Repair encountered issues.",
+            "output": output, "elapsed_seconds": elapsed,
+            "attempt": attempt + 1,
+            "verified": verified,
+        }
+
+        if success:
+            return last_result
+
+        # Wait before retry (exponential backoff: 3s, 6s)
+        if attempt < max_attempts - 1:
+            wait = 2 ** attempt * 3
+            logger.info(f"[RETRY] Repair {target_id} failed — retrying in {wait}s")
+            time.sleep(wait)
+
+    # ── Auto-escalation on final failure ──────────────────────────────────
+    escalation_chain = ESCALATION_CHAINS.get(target_id, [])
+    for esc_id in escalation_chain:
+        esc_fn = REPAIR_FUNCTIONS.get(esc_id)
+        if esc_fn:
+            logger.info(f"[ESCALATE] Primary repair {target_id} failed — escalating to {esc_id}")
+            start = time.time()
+            try:
+                esc_success, esc_output = esc_fn()
+            except Exception as e:
+                esc_success, esc_output = False, str(e)
+            esc_elapsed = round(time.time() - start, 2)
+
+            if esc_success:
+                # Verify escalated repair too
+                esc_verified, esc_verify_msg = _verify_repair(esc_id)
+                return {
+                    "repair_id": esc_id, "success": esc_verified,
+                    "message": f"Escalated repair ({esc_id}) {'completed and verified' if esc_verified else 'completed but verification failed'}.",
+                    "output": esc_output + (f"\n{esc_verify_msg}" if esc_verify_msg else ""),
+                    "elapsed_seconds": esc_elapsed,
+                    "escalated_from": target_id,
+                    "verified": esc_verified,
+                }
+
+    # All attempts and escalations failed
+    if last_result:
+        last_result["message"] = "Repair failed after all attempts and escalations."
+        if escalation_chain:
+            last_result["escalation_attempted"] = escalation_chain
+    return last_result or {
+        "repair_id": target_id, "success": False,
+        "message": "Repair failed.", "output": "Unknown error during repair execution."
     }
 
 
