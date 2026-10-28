@@ -1,16 +1,25 @@
 """
 SmartFix AI — Lab Monitor Shared Config & Protocol
 Handles seat name persistence, protocol message helpers, and shared constants.
+Includes protocol versioning, message size limits, and HMAC authentication.
 """
 import json
 import os
 import socket
+import hashlib
+import hmac
+import time
 from typing import Any, Dict, Optional
 
 LAB_PORT = int(os.getenv("SMARTFIX_LAB_PORT", "7771"))
 DISCOVERY_PORT = int(os.getenv("SMARTFIX_DISCOVERY_PORT", "7772"))
 LAB_AGENT_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"  # Protocol version for future compatibility
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "lab_config.json")
+
+# ── Protocol Constants ─────────────────────────────────────────────────────────
+MAX_MESSAGE_SIZE = 1_048_576  # 1 MB — prevents memory exhaustion from oversized messages
+MESSAGE_TIMEOUT  = 10.0       # Default socket timeout
 
 # ── Message types ──────────────────────────────────────────────────────────────
 MSG_PING          = "PING"
@@ -76,7 +85,6 @@ def set_mode(mode: str):
 
 
 # ── Authentication & Security ──────────────────────────────────────────────────
-import hashlib
 
 DEFAULT_PASSKEY = os.getenv("SMARTFIX_ADMIN_PASSKEY", "admin123")
 
@@ -119,7 +127,52 @@ def verify_auth_token(token: str) -> bool:
     """Verify an auth token sent from an admin."""
     if not token:
         return False
-    return token == get_admin_passkey_hash()
+    return hmac.compare_digest(token, get_admin_passkey_hash())
+
+
+# ── HMAC Signature for UDP Discovery ──────────────────────────────────────────
+
+def sign_discovery_message(data: dict) -> dict:
+    """Add HMAC signature to a discovery broadcast message."""
+    data["version"] = PROTOCOL_VERSION
+    data["timestamp"] = int(time.time())
+    payload = json.dumps(data, sort_keys=True)
+    sig = hmac.new(
+        get_admin_passkey_hash().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    return {"data": data, "sig": sig}
+
+
+def verify_discovery_message(msg: dict) -> Optional[dict]:
+    """Verify and extract a signed discovery message. Returns data if valid, None if tampered."""
+    try:
+        data = msg.get("data")
+        sig = msg.get("sig", "")
+        if not data or not sig:
+            # Backwards compatibility: accept unsigned messages from older agents
+            if msg.get("type") == "ANNOUNCE":
+                return msg
+            return None
+        payload = json.dumps(data, sort_keys=True)
+        expected_sig = hmac.new(
+            get_admin_passkey_hash().encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(sig, expected_sig):
+            # Check timestamp freshness (reject messages older than 60 seconds)
+            ts = data.get("timestamp", 0)
+            if abs(time.time() - ts) > 60:
+                return None
+            return data
+        return None
+    except Exception:
+        # Backwards compatibility fallback
+        if isinstance(msg, dict) and msg.get("type") == "ANNOUNCE":
+            return msg
+        return None
 
 
 def get_local_ip() -> str:
@@ -145,14 +198,22 @@ def save_known_clients(clients: list):
     save_lab_config(cfg)
 
 
+# ── Protocol Messaging ────────────────────────────────────────────────────────
+
 def make_message(msg_type: str, payload: Optional[Dict] = None) -> bytes:
-    """Encode a message as newline-terminated JSON."""
-    msg = {"type": msg_type, "payload": payload or {}}
+    """Encode a message as newline-terminated JSON with protocol version."""
+    msg = {
+        "type": msg_type,
+        "version": PROTOCOL_VERSION,
+        "payload": payload or {},
+    }
     return (json.dumps(msg) + "\n").encode("utf-8")
 
 
 def parse_message(raw: str) -> Optional[Dict[str, Any]]:
-    """Decode a JSON message string. Returns None on parse error."""
+    """Decode a JSON message string. Returns None on parse error or oversized input."""
+    if len(raw) > MAX_MESSAGE_SIZE:
+        return None
     try:
         return json.loads(raw.strip())
     except Exception:
@@ -168,12 +229,15 @@ def send_message(sock: socket.socket, msg_type: str, payload: Optional[Dict] = N
         return False
 
 
-def recv_message(sock: socket.socket, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
-    """Receive one newline-terminated JSON message from a socket."""
+def recv_message(sock: socket.socket, timeout: float = MESSAGE_TIMEOUT, max_size: int = MAX_MESSAGE_SIZE) -> Optional[Dict[str, Any]]:
+    """Receive one newline-terminated JSON message from a socket.
+    Enforces max buffer size to prevent memory exhaustion attacks."""
     sock.settimeout(timeout)
     buf = b""
     try:
         while b"\n" not in buf:
+            if len(buf) > max_size:
+                return None  # Reject oversized messages — potential DoS
             chunk = sock.recv(65536)
             if not chunk:
                 return None
